@@ -211,6 +211,22 @@ def test_folding_survives_a_file_that_is_not_on_disk():
         exec_names.__file__ = original
 
 
+def test_command_name_is_not_memoised_on_agent_supplied_tokens():
+    """A regression guard on a decorator that was ORPHANED, not written.
+
+    `@lru_cache(maxsize=None)` belonged to the deleted probe, whose input was
+    one path. Left in place it landed on `command_name`, whose input is an
+    arbitrary command token — so every distinct token the guard ever saw was
+    retained for the life of a long-running desktop server, keyed on strings
+    the agent supplies, in a security hot path. Correct answers, unbounded
+    memory.
+    """
+    assert not hasattr(exec_names.command_name, "cache_info"), (
+        "command_name is memoised; if that is ever wanted it needs a real "
+        "maxsize and its own reasoning"
+    )
+
+
 def test_the_probe_that_read_its_own_path_is_gone():
     """A regression guard on the shape rather than on one caller: reintroducing
     a `__file__`-derived decision reopens #350 exactly."""

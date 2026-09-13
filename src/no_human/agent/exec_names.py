@@ -88,7 +88,6 @@ from __future__ import annotations
 
 import os
 import re
-from functools import lru_cache
 from pathlib import PurePosixPath
 
 #: Every extension Windows will execute directly, longest-first so `.exe` is
@@ -153,7 +152,6 @@ def host_folds_case() -> bool:
     return True
 
 
-@lru_cache(maxsize=None)
 def command_name(token: str, *, is_windows: bool, fold_case: bool | None = None) -> str:
     r"""The command name `token` spells, or `""` if it names nothing.
 
