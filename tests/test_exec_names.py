@@ -185,7 +185,7 @@ def test_the_probe_measures_the_volume_it_is_asked_about(tmp_path):
     other_spelling = tmp_path / "PROBE"
     folds_here = other_spelling.exists() and os.path.samefile(other_spelling, written)
 
-    assert exec_names._folds_case(written) is folds_here
+    assert exec_names._folds_case(str(written)) is folds_here
 
 
 def test_the_probe_matches_this_host():
@@ -207,7 +207,7 @@ def test_an_unmeasurable_path_falls_back_to_the_host_class():
     """
     import os
 
-    missing = Path("/no_human-nonexistent-probe-dir/AbC")
+    missing = "/no_human-nonexistent-probe-dir/AbC"
 
     assert exec_names._folds_case(missing) is (os.name == "nt")
 

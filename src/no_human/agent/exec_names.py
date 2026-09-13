@@ -89,7 +89,7 @@ from __future__ import annotations
 import os
 import re
 from functools import lru_cache
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 #: Every extension Windows will execute directly, longest-first so `.exe` is
 #: not stripped out of a name that ends `.exe.cmd`.
@@ -144,16 +144,23 @@ def host_folds_case() -> bool:
     entitled to run -- which is the reason both earlier positions were correct
     about their own host and wrong about the other.
     """
-    return _folds_case(Path(__file__).resolve())
+    return _folds_case(os.path.realpath(__file__))
 
 
 @lru_cache(maxsize=None)
-def _folds_case(path: Path) -> bool:
-    swapped = path.with_name(path.name.swapcase())
-    if swapped.name == path.name:  # nothing to swap: no evidence either way
+def _folds_case(path: str) -> bool:
+    # `os.path`, not `pathlib`: `Path(...)` instantiates the class for the
+    # CURRENT platform, so a test that patches `os.name` to "nt" and reloads
+    # this module gets `NotImplementedError: cannot instantiate 'WindowsPath'`
+    # from the probe rather than an answer. These are the same syscalls with
+    # no platform-bound object in the way.
+    directory, name = os.path.split(os.fspath(path))
+    swapped_name = name.swapcase()
+    if swapped_name == name:  # nothing to swap: no evidence either way
         return os.name == "nt"
+    swapped = os.path.join(directory, swapped_name)
     try:
-        return swapped.exists() and os.path.samefile(str(swapped), str(path))
+        return os.path.exists(swapped) and os.path.samefile(swapped, path)
     except OSError:
         # An unreadable or vanished path proves nothing; fall back to the
         # host class rather than guessing the permissive answer.
