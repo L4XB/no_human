@@ -196,6 +196,48 @@ def test_names_fold_on_every_host(tmp_path):
     assert volume_folds in (True, False)
 
 
+def test_the_host_probe_is_measured_once_not_once_per_token(monkeypatch):
+    """No filesystem work per guarded token. Kept from `main`, which added it.
+
+    `main` reads this on every guarded command and `guard._looks_like_git_push`
+    reads it per TOKEN, so a command of 4000 quoted arguments read it 4000
+    times; `os.path.realpath` ran before the inner memo could answer and lstats
+    every path component, so the cache was only reached after paying the
+    syscalls it exists to avoid. `guard.evaluate` on that shape ran 0.132s
+    against 0.036s once the probe was cached -- enough to push
+    `test_unmask_is_one_pass_not_one_per_table_entry` past its 0.4s bound on a
+    shared runner and turn trunk red.
+
+    After this PR the count is 0, not 1: there is no probe left to cache. The
+    test stays because it grades the PROPERTY, not the mechanism -- it is the
+    guard against anyone reintroducing a per-token filesystem question, by
+    cache or otherwise. It counts CALLS rather than timing them; the wall-clock
+    bound that caught the original regression is deliberately loose and should
+    not be asked to catch it twice.
+    """
+    import os as _os
+    calls = []
+    real_realpath = _os.path.realpath
+    monkeypatch.setattr(
+        _os.path, "realpath",
+        lambda p, *a, **k: (calls.append(p), real_realpath(p, *a, **k))[1])
+
+    # Optional by design -- see the docstring. An implementation that answers
+    # without a memo has no `cache_clear`, and must still pass.
+    clear = getattr(exec_names.host_folds_case, "cache_clear", lambda: None)
+    clear()
+    try:
+        for _ in range(50):
+            exec_names.host_folds_case()
+    finally:
+        clear()
+
+    mine = [c for c in calls if str(c).endswith("exec_names.py")]
+    assert len(mine) <= 1, (
+        "host_folds_case probed the filesystem instead of answering from a "
+        f"constant: {len(mine)} realpath calls for 50 invocations")
+
+
 def test_folding_survives_a_file_that_is_not_on_disk():
     """The frozen shape, which is where #339's probe failed open.
 

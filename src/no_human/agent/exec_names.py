@@ -142,6 +142,14 @@ def host_folds_case() -> bool:
     one directory and applying the answer to another is the same defect in a
     different costume.
 
+    `main` cached this in the meantime, because the realpath ran before the
+    inner memo could answer and every guarded token paid its lstats -- enough
+    to push `test_unmask_is_one_pass_not_one_per_table_entry` past its 0.4s
+    bound on a shared runner. That fix is not carried forward and does not
+    need to be: with no probe there is no syscall to spare, and a memo on a
+    constant is the same orphaned decorator this PR was asked to remove one
+    of.
+
     So there is nothing left to measure. Folding always is the only position
     whose failure direction is closed: on a case-insensitive host it denies
     nothing that could not already run, and on a case-sensitive one it can
