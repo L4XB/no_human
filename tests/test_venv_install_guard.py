@@ -111,6 +111,25 @@ def _ev(tool, inp, *, cwd, env):
 # instead of resolving what actually executes and where it writes.
 # ---------------------------------------------------------------------------
 
+def test_an_installer_name_folds_case_on_every_host():
+    """`PIP install evilpkg` is `pip install evilpkg` on the default macOS
+    filesystem, and it landed in exactly the venv this guard protects (#347).
+
+    The old rule folded on Windows only, arguing that on POSIX `PIP` is a
+    different file. True of a case-SENSITIVE filesystem, false of the one most
+    contributors are on.
+    """
+    from no_human.agent.venv_install_guard import _is_installer_name
+
+    for spelling in ("pip", "PIP", "Pip", "pIp", "PIP3", "Pip3"):
+        assert _is_installer_name(spelling) is True, spelling
+    # Control: the rule still says no to a name that is not an installer, in
+    # any case, so the assertions above are not passing on a rule that folded
+    # into "always True".
+    for other in ("ls", "LS", "gitt", "GITT", "pipx-ish"):
+        assert _is_installer_name(other) is False, other
+
+
 def test_verdict1_wrapper_and_nested_shell_installs_are_denied(tmp_path):
     primary, primary_venv, wt, wt_venv, prod_env, wt_env = _session(tmp_path)
     cases = [

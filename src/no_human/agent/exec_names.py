@@ -121,52 +121,39 @@ def case_flags() -> int:
 
 
 def host_folds_case() -> bool:
-    r"""Whether this host's filesystem resolves two spellings of one name to the
-    same file. Measured, not assumed.
+    r"""Always True: names are compared case-insensitively, everywhere.
 
-    `is_windows` answers the question for Windows and gets POSIX wrong: macOS
-    ships APFS case-insensitive by default, and so are many Linux mounts
-    (exFAT/NTFS volumes, ciopfs, a case-insensitive ZFS dataset). On such a
-    host `GH pr merge 7` really invokes `gh pr merge 7`, and every gate that
-    compares against a lowercase name is open to the capitalised spelling
-    (#328).
+    `is_windows` answers this for Windows and gets POSIX wrong — macOS ships
+    APFS case-insensitive by default, and so are many Linux mounts (exFAT/NTFS
+    volumes, ciopfs, a case-insensitive ZFS dataset). On such a host
+    `GH pr merge 7` really invokes `gh pr merge 7`, and every gate comparing
+    against a lowercase name is open to the capitalised spelling (#328).
 
-    The probe is the same question the OS is already answering: swap the case
-    of this module's own filename and ask whether that path is the same file.
-    `samefile` rather than `exists`, so a genuinely different file that happens
-    to carry the swapped spelling is not mistaken for a fold.
+    #339 answered that by MEASURING: case-swap this module's own filename and
+    ask the OS whether it is the same file. Correct in a checkout, and wrong
+    in the artifact users run. The desktop server is a PyInstaller freeze whose
+    first rule is "NO .py FILES IN THE BUNDLE", so `__file__` names a path that
+    does not exist, the probe proves nothing, and its fallback was
+    `os.name == "nt"` -- False on macOS, i.e. the PERMISSIVE answer. Built as a
+    real freeze, `RM -rf /` and `GH pr merge 7` both came back ALLOW (#350).
 
-    Cached: the answer cannot change while the process runs, and it is read on
-    every guarded command.
+    A probe would also be answering the wrong question even where it works.
+    Command resolution is a PATH question, not a cwd question: `/usr/bin` may
+    fold when a developer's case-sensitive code volume does not, so measuring
+    one directory and applying the answer to another is the same defect in a
+    different costume.
 
-    Folding on a case-insensitive host denies nothing that could not already
-    run, and skipping it on a case-sensitive one refuses nothing a user is
-    entitled to run -- which is the reason both earlier positions were correct
-    about their own host and wrong about the other.
+    So there is nothing left to measure. Folding always is the only position
+    whose failure direction is closed: on a case-insensitive host it denies
+    nothing that could not already run, and on a case-sensitive one it can
+    only refuse `RM` and `GH` -- spellings nobody types, each costing one
+    message with a stated alternative. Being wrong in the other direction
+    costs a merge.
     """
-    return _folds_case(os.path.realpath(__file__))
+    return True
 
 
 @lru_cache(maxsize=None)
-def _folds_case(path: str) -> bool:
-    # `os.path`, not `pathlib`: `Path(...)` instantiates the class for the
-    # CURRENT platform, so a test that patches `os.name` to "nt" and reloads
-    # this module gets `NotImplementedError: cannot instantiate 'WindowsPath'`
-    # from the probe rather than an answer. These are the same syscalls with
-    # no platform-bound object in the way.
-    directory, name = os.path.split(os.fspath(path))
-    swapped_name = name.swapcase()
-    if swapped_name == name:  # nothing to swap: no evidence either way
-        return os.name == "nt"
-    swapped = os.path.join(directory, swapped_name)
-    try:
-        return os.path.exists(swapped) and os.path.samefile(swapped, path)
-    except OSError:
-        # An unreadable or vanished path proves nothing; fall back to the
-        # host class rather than guessing the permissive answer.
-        return os.name == "nt"
-
-
 def command_name(token: str, *, is_windows: bool, fold_case: bool | None = None) -> str:
     r"""The command name `token` spells, or `""` if it names nothing.
 

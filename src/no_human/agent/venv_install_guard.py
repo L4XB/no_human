@@ -350,14 +350,19 @@ def _basename(path: str) -> str:
 
 
 def _is_installer_name(name: str) -> bool:
-    # Case-folded on Windows ONLY, where the filesystem is: `PIP.EXE` and
-    # `pip.exe` are the same file there and must reach the same verdict, while
-    # on POSIX `PIP` is a genuinely different file and folding would be a text
-    # match masquerading as a structural one. Round 3 of #105 found
-    # `…\Scripts\PIP.EXE install requests` allowed while the lowercase
-    # spelling was refused.
-    if _IS_WINDOWS:
-        name = name.lower()
+    # Case-folded EVERYWHERE, not on Windows only. The old comment argued that
+    # on POSIX `PIP` is a genuinely different file — true of a case-SENSITIVE
+    # filesystem and false of the default macOS one, where `PIP install` is
+    # `pip install` and lands in exactly the venv this guard protects (#347).
+    #
+    # Not probed, because a probe answers the wrong question and can fail in
+    # the direction that hurts. Command resolution follows PATH, so `/usr/bin`
+    # may fold when the worktree's volume does not, and the one probe this
+    # repo shipped read `__file__`, which does not exist in the frozen artifact
+    # (#350). Folding always is the only position whose failure direction is
+    # closed: on a case-sensitive host it can refuse `PIP`, a spelling nobody
+    # types, and never the reverse. See `exec_names.host_folds_case`.
+    name = name.lower()
     if name in _EXACT_INSTALLERS:
         return True
     return any(

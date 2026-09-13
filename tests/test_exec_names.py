@@ -167,49 +167,72 @@ def test_a_folding_host_reads_one_name():
     assert exec_names.command_name(r"weird\Name", is_windows=False, fold_case=True) == r"weird\name"
 
 
-def test_the_probe_measures_the_volume_it_is_asked_about(tmp_path):
-    """Derived a second way so the probe cannot pass by asserting itself: write
-    ONE spelling, then ask the OS whether the other names the same file.
+def test_names_fold_on_every_host(tmp_path):
+    """No probe, no platform check: the answer is True everywhere.
 
-    Note what this can and cannot catch. On a case-INSENSITIVE developer
-    machine a probe hardcoded to `True` agrees with every measurement and
-    survives; on a case-sensitive runner — which CI is — it fails here and at
-    `test_the_probe_matches_this_host` below. The asymmetry is inherent: a host
-    that folds cannot observe the difference between measuring and assuming
-    that it folds.
+    #339 measured instead, by case-swapping this module's own filename. That
+    is right in a checkout and wrong in the artifact users run — the desktop
+    server is a PyInstaller freeze with no `.py` files, so `__file__` names a
+    path that is not there, and the fallback was `os.name == "nt"`, i.e. ALLOW
+    on macOS (#350).
+
+    A probe was also answering the wrong question. Command resolution follows
+    PATH; `/usr/bin` may fold when a developer's case-sensitive code volume
+    does not, so a measurement of one directory says nothing about the other.
     """
     import os
 
     written = tmp_path / "probe"
     written.write_text("x")
-    other_spelling = tmp_path / "PROBE"
-    folds_here = other_spelling.exists() and os.path.samefile(other_spelling, written)
+    volume_folds = (tmp_path / "PROBE").exists() and os.path.samefile(
+        str(tmp_path / "PROBE"), str(written)
+    )
 
-    assert exec_names._folds_case(str(written)) is folds_here
-
-
-def test_the_probe_matches_this_host():
-    """The same question about the volume the module itself lives on, which is
-    the one `host_folds_case` answers."""
-    import os
-
-    module = Path(exec_names.__file__).resolve()
-    swapped = module.with_name(module.name.swapcase())
-    really_folds = swapped.exists() and os.path.samefile(str(swapped), str(module))
-
-    assert exec_names.host_folds_case() is really_folds
-    assert bool(exec_names.case_flags()) is really_folds
+    # True whichever way this runner's filesystem answers — that is the point.
+    assert exec_names.host_folds_case() is True
+    assert bool(exec_names.case_flags()) is True
+    # Control: the test really did learn what this volume does, so the
+    # assertion above is independent of it rather than agreeing with it.
+    assert volume_folds in (True, False)
 
 
-def test_an_unmeasurable_path_falls_back_to_the_host_class():
-    """A path that cannot be stat'ed proves nothing about the volume, so the
-    probe returns the `os.name` answer rather than guessing the permissive one.
+def test_folding_survives_a_file_that_is_not_on_disk():
+    """The frozen shape, which is where #339's probe failed open.
+
+    The module keeps a `__file__` that does not exist. Anything reading it to
+    decide returns the permissive answer; this returns the closed one.
     """
-    import os
+    original = exec_names.__file__
+    exec_names.__file__ = "/no_human-nonexistent/_internal/agent/exec_names.py"
+    try:
+        assert not Path(exec_names.__file__).exists()
+        assert exec_names.host_folds_case() is True
+    finally:
+        exec_names.__file__ = original
 
-    missing = "/no_human-nonexistent-probe-dir/AbC"
 
-    assert exec_names._folds_case(missing) is (os.name == "nt")
+def test_the_probe_that_read_its_own_path_is_gone():
+    """A regression guard on the shape rather than on one caller: reintroducing
+    a `__file__`-derived decision reopens #350 exactly."""
+    import ast
+    import inspect
+
+    source = inspect.getsource(exec_names.host_folds_case)
+    tree = ast.parse(source.lstrip())
+    function = tree.body[0]
+    # The docstring explains what the old probe read, so the guard has to look
+    # at CODE. Drop the docstring node and unparse what is left.
+    statements = function.body
+    if (
+        statements
+        and isinstance(statements[0], ast.Expr)
+        and isinstance(statements[0].value, ast.Constant)
+        and isinstance(statements[0].value.value, str)
+    ):
+        statements = statements[1:]
+    code = "\n".join(ast.unparse(node) for node in statements)
+
+    assert code.strip() == "return True", code
 
 
 #: The four rows #328 measured as open on main, plus the flag spelling of the
