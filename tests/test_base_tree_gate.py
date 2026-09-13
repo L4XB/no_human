@@ -379,11 +379,13 @@ async def test_pre_existing_red_test_excused_when_runner_rewrites_the_command(
     from no_human.testing import runner as runner_module
 
     executed: list[str] = []
+    child_paths: list[str] = []
     real_run_shell = runner_module._run_shell
 
-    def recording_run_shell(cmd, *args, **kwargs):
+    def recording_run_shell(cmd, work_dir, timeout, run_env, *args, **kwargs):
         executed.append(cmd)
-        return real_run_shell(cmd, *args, **kwargs)
+        child_paths.append(run_env.get("PATH", ""))
+        return real_run_shell(cmd, work_dir, timeout, run_env, *args, **kwargs)
 
     monkeypatch.setattr(runner_module, "_run_shell", recording_run_shell)
 
@@ -408,10 +410,26 @@ async def test_pre_existing_red_test_excused_when_runner_rewrites_the_command(
         "the fixture never attempted the bare `pytest` command, so nothing "
         f"forced the rewrite this test is named for: {pytest_runs}"
     )
+    # A bare command that LAUNCHED means the fixture never built the situation
+    # this test is named for, and saying that beats asserting a rewrite which
+    # had no reason to happen. The child's own PATH is the evidence, because
+    # `shutil.which` above measured the TEST process and the two need not
+    # agree — `_env_for` builds the child's environment separately.
+    resolvable = [
+        str(Path(entry) / "pytest")
+        for entry in (child_paths[0] if child_paths else "").split(os.pathsep)
+        if entry and (Path(entry) / "pytest").exists()
+    ]
     assert rewritten, (
-        "the runner never re-ran through `sys.executable -m pytest` — the "
-        "class-3 rewrite did not happen, so the verdict below says nothing "
-        f"about it: {pytest_runs}"
+        "the runner never re-ran through `sys.executable -m pytest`. "
+        f"Commands: {pytest_runs}. "
+        + (
+            "The bare command LAUNCHED, so the fixture never forced a "
+            f"rewrite — the child resolved pytest at {resolvable}."
+            if resolvable
+            else "The class-3 rewrite did not happen, so the verdict below "
+            "says nothing about it."
+        )
     )
     assert bare[0] < rewritten[0], (
         "the rewritten command did not FOLLOW a failed bare invocation; it "
