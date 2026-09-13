@@ -13,6 +13,7 @@ the change broke the runner; the attempt FAILS.
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from no_human.core.orchestrator import Orchestrator
@@ -369,11 +370,72 @@ async def test_pre_existing_red_test_excused_when_runner_rewrites_the_command(
             "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
         )
 
+    # Every command that actually reached a shell. The outcome below is
+    # produced by several paths, so on its own it says nothing about the
+    # rewrite this test is named for: the class-3 branch could return `None`
+    # and the assertions still passed, while four tests elsewhere in this file
+    # carried the behaviour (#353). `_run_shell` is the resolution point —
+    # `run_tests` aliases it at call time precisely so a patch here applies.
+    from no_human.testing import runner as runner_module
+
+    executed: list[str] = []
+    real_run_shell = runner_module._run_shell
+
+    def recording_run_shell(cmd, *args, **kwargs):
+        executed.append(cmd)
+        return real_run_shell(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "_run_shell", recording_run_shell)
+
     orch = _orch(store, tmp_path, FakeBackend(mutate))
     t = Task.new("add mul()", repo_path=str(bare_repo))
     await store.create_task(t)
 
     outcome = await orch.run_task(t)
+
+    # The rewrite itself, in the order it has to happen: the detected bare
+    # `pytest` is attempted, fails to launch because PATH no longer resolves
+    # it, and the runner re-runs the SAME request through this interpreter.
+    pytest_runs = [c for c in executed if "pytest" in c]
+    assert pytest_runs, f"no pytest command reached a shell at all: {executed}"
+
+    bare = [i for i, c in enumerate(pytest_runs) if c.lstrip().startswith("pytest")]
+    rewritten = [
+        i for i, c in enumerate(pytest_runs)
+        if f"{sys.executable} -m pytest" in c
+    ]
+    assert bare, (
+        "the fixture never attempted the bare `pytest` command, so nothing "
+        f"forced the rewrite this test is named for: {pytest_runs}"
+    )
+    assert rewritten, (
+        "the runner never re-ran through `sys.executable -m pytest` — the "
+        "class-3 rewrite did not happen, so the verdict below says nothing "
+        f"about it: {pytest_runs}"
+    )
+    assert bare[0] < rewritten[0], (
+        "the rewritten command did not FOLLOW a failed bare invocation; it "
+        f"was not produced by the retry path: {pytest_runs}"
+    )
+
+    # And VERBATIM, which is the half of the claim the send-back turned on:
+    # the guard this test exists to keep deleted was discarding the rewritten
+    # verdict precisely because the command string differed, while the node ids
+    # it asked for did not. A rewrite that dropped them would be a different
+    # request wearing the same name.
+    tails = {
+        c.split(" -m pytest", 1)[1]
+        for i, c in enumerate(pytest_runs)
+        if i in rewritten
+    }
+    bare_tails = {
+        c.lstrip()[len("pytest"):] for i, c in enumerate(pytest_runs) if i in bare
+    }
+    assert tails <= bare_tails, (
+        "the rewrite did not preserve the arguments of the command it "
+        f"replaced: rewritten tails {sorted(tails)} are not among the bare "
+        f"ones {sorted(bare_tails)}"
+    )
 
     assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
     assert outcome.pr_url is not None
