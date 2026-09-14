@@ -1392,7 +1392,12 @@ FROZEN_FILE_LINES = {
     # 6-line `permission_mode` validation to `doctor`, so an invalid
     # `llm.permission_mode` is reported as a contradiction instead of dying at
     # the first task. Measured on the merge result with the scanner below.
-    "cli/commands.py": 8935,
+    # 8935 -> 8946 (+11): #343 routes the two human-initiated config writes in
+    # this file (`nh task config`, and a blocker option carrying
+    # `set_task_config`) through the new `update_task_config`, now that
+    # `update_task_columns` no longer writes the column. Measured on this tree
+    # with the scanner below.
+    "cli/commands.py": 8946,
     # api/app.py 5338 -> 5346 (+8): same budget-floor warning surfaced by
     # `send-back`/`reply` as `budget_warning` in the JSON response. Net cost
     # was trimmed from a naive +14 to +8 by computing `Bounds.from_config(...)`
@@ -1568,7 +1573,10 @@ FROZEN_FILE_LINES = {
     # 6330 -> 6332 (+2): #227 (PR #308) routes the onboarding docs-generate
     # backend through `make_backend`, so that path honours
     # `llm.permission_mode` like every other. Measured on the merge result.
-    "api/app.py": 6332,
+    # 6332 -> 6338 (+6): #343 — the same wiring on the API's blocker-answer
+    # path, for the same reason as `cli/commands.py` above. Measured on this
+    # tree with the scanner below.
+    "api/app.py": 6338,
     # +51: W5 active-time phase writer (phase instrumentation).
     # +84: `list_escalations`/`list_review_fails`/`list_tamper_trips` — the
     # three new failure-signal sources the recurring learning harvest mines.
@@ -1681,7 +1689,16 @@ FROZEN_FILE_LINES = {
     # winning marker forward into the new context blob the same way
     # `cancel_reason` already is, plus the expanded docstrings explaining why.
     # Measured via `wc -l src/no_human/core/db.py` on this merge result.
-    "core/db.py": 5193,
+    # 5193 -> 5230 (+37): #343 — `config` leaves the column list of BOTH
+    # `update_task` and `update_task_columns` and gets `update_task_config`,
+    # a targeted single-column writer shaped like `update_task_title`. A
+    # watcher tick that concluded "nothing to do" was writing its handle's
+    # pre-raise copy of the human-only budget cap back over an
+    # `nh task config lifetime_tokens=N` that had landed while the tick was in
+    # flight. Most of the +37 is the two docstrings recording why the column
+    # is excluded (the same shape `status` and `context` already carry).
+    # Measured on this tree with the scanner below.
+    "core/db.py": 5230,
     # +71: set_local_backend_fields — the config-write helper for the Settings
     # pane's local coder-backend fields (llm.local_model / llm.local_base_url).
     # +75: Codex account config helpers.
