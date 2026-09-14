@@ -405,18 +405,33 @@ by head sha precisely because nothing re-evaluates it: a verdict stamped for
 an older commit is shown as absent (`merge_ready: null`) for the commit
 sitting in the PR now, rather than carried forward as if it still applied.
 
-`nh approve --ready` is a convenience LISTING over that same base path — it
-prints every `awaiting_approval` task whose verdict is `ready: true` for its
-*current* branch head (a stale-sha verdict, or one with
-`policy_changed_in_diff: true`, is excluded, same rule as above) alongside
-its `rules passed/total` and PR URL, and does nothing else. Add `--yes` and
-it walks that list through `nh approve <task_id>`'s own procedure — one task
-at a time, in listed order, stopping at the first failure — so every
-precondition `nh approve <task_id>` already enforces (the reviewer PASS
-above included) still applies per task; the verdict only decides what gets
-offered to a human to land, never whether a task is *allowed* to land. The
-board shows the same verdict as a `MERGE-READY` chip on a task's card. This
-does not change who merges: `--yes` still runs the identical git-identity
+`nh approve --ready` is a convenience LISTING over that same base path, but
+it answers two independent questions, not one: it prints every
+`awaiting_approval` task whose verdict is `ready: true` for its *current*
+branch head (a stale-sha verdict, or one with `policy_changed_in_diff: true`,
+is excluded, same rule as above) alongside its `rules passed/total` — that
+half is the quality-rule verdict above, unchanged. Separately, and checked
+fresh on every invocation rather than cached, it asks whether the branch
+*still merges into its current base right now* (`vcs/landability.py`): the
+six-rule verdict is keyed by head sha and correctly invalidates when the
+branch moves, but nothing about it invalidates when the base moves — and
+every landing rewrites the generated `RELEASE_MANIFEST.txt`, so every
+landing conflicts every other open PR's branch against that file. A task can
+therefore pass every quality rule and still not be landable right now; the
+line for it shows `merge: CONFLICT` (never hidden, never auto-resolved) and
+it is excluded from the "ready to land" count and from what `--yes` lands.
+A task whose branch merges cleanly (or whose only conflict is confined to a
+derived artefact `land_task` regenerates at land time) shows `merge: clean`
+and counts as ready. Add `--yes` and it walks the ready (non-conflicted)
+tasks through `nh approve <task_id>`'s own procedure — one task at a time,
+in listed order, stopping at the first failure — so every precondition
+`nh approve <task_id>` already enforces (the reviewer PASS above included)
+still applies per task; the two verdicts only decide what gets offered to a
+human to land, never whether a task is *allowed* to land. The board shows
+the same quality-rule verdict as a `MERGE-READY` chip on a task's card
+(that chip is unchanged — it is the DB-only, quality-rules-only signal;
+live base mergeability is a `--ready`-only, git-backed check). This does
+not change who merges: `--yes` still runs the identical git-identity
 squash-land as a single `nh approve <task_id>`, and a human still has to
 type it.
 
@@ -563,6 +578,48 @@ alongside `("pr", "merge")` and `("mr", "merge")`, and the lexical
 modelled, not a closed door — the modelled set is not closed. Treat
 the matcher as a cost on the obvious spellings, not as the door: the control
 that closes it is a check at the act, not a longer pattern.
+
+Capitalising one letter of the binary, the noun or the verb used to walk past
+both the wrapper recursion above and the pair check behind it (#328). The
+recursion resolved a runner's nested command name — `timeout 30 GH pr merge
+7`, `sh -c "GIT push origin main"` — with a raw, case-blind name comparison
+instead of the host-gated `exec_names.command_name` the top-level `argv[0]`
+path already used, so a capitalised name never reached the recursive call at
+all; `_forge_invocations` and `_git_invocations` both go through
+`command_name` now, on a folding host exactly where `git.exe`/`gh.exe`
+already do. `_forge_subcommand` also compared and returned raw-case tokens,
+so even a structurally-found `("pr", "MERGE")` failed the `_FORGE_MERGE_PAIRS`
+membership check; that fold is unconditional (a CLI subcommand spelling is
+not a filesystem name, so a case-sensitive host is not entitled to run `gh pr
+MERGE` any more than a folding one is). `_FORGE_MERGE` itself gained the
+`exec_names.case_flags()` its siblings `_RM_RF`/`_GIT_DESTRUCTIVE` already
+carried, so a capitalised name denies lexically too wherever no structural
+path reaches it (`GH api .../pulls/7/merge`). `tests/test_exec_names.py`'s
+`_CASE_MATRIX_ROWS` pins the binary/noun/verb × forge matrix across the bare
+form plus all 18 real runners in `guard._FORGE_RUNNER_NAMES` through
+`evaluate` — the recursion is name-driven rather than per-runner
+special-cased, so every runner reaches the identical `_FORGE_MENTION`/
+`command_name` code path in `_forge_invocations` regardless of which shape
+wraps it, and the matrix's runner templates are generated from that set
+directly rather than hand-picked, so all 18 are pinned and the matrix cannot
+go stale the way a hand-picked sample would.
+
+A capitalised binary walked past the protected-branch push check the same
+way, but through a different door: `_git_push_invocations` (the extractor
+behind the default, non-read-only session's push check) is a separate
+argv walker from `_git_invocations` above, and has its own structural gap
+for an *unquoted* trailing-argv runner — `timeout 30 GIT push origin main`
+and `xargs GIT push origin main` split into separate tokens, so no single
+token holds both `git` and `push` for the recursion to match, unlike a
+quoted `sh -c "GIT push origin main"`, where the whole script is one token.
+That structural gap is left as-is; what closes the capitalised case is
+`evaluate`'s own whole-string `git ... push` lexical fallback — the one
+that already catches a push spelled inside a heredoc, an alias, or a quoted
+fragment a shlex walk does not reach — which now also carries
+`exec_names.case_flags()`, the same way `_FORGE_MERGE` and `_GIT_MENTION`
+do. `tests/test_exec_names.py::test_a_capitalised_git_push_is_denied_in_the_default_session_too`
+pins it through `evaluate`, in the default session, on both a folding and a
+case-sensitive host.
 
 Pushes to `main`, `master` and `release/*` are refused too, and that rule has
 a second enforcement point, which is the part worth knowing. The first is

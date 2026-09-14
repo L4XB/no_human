@@ -16,6 +16,20 @@ Blocks, before execution:
   - git that overwrites or discards WORKING-TREE content the agent did not
     create (`git stash`, `git restore`, `git checkout -- <path>`, `git clean
     -fd`, `git checkout-index -f`, ...) — in every session, coder included
+  - rewriting a branch that is already PUSHED below its pushed tip: `git
+    rebase` (every lexical spelling this module recognizes, incl. `pull
+    --rebase`/`-c pull.rebase=true pull`), `git reset` in any mode
+    (`--soft`/`--mixed`/default/`--hard`/`--merge`/`--keep`) to a target the
+    tip isn't an ancestor of, `git commit --amend` of the tip, `git checkout
+    -B`/`switch -C`/`branch -f`/`git update-ref` that moves the current
+    branch, and `git filter-branch` — delivery only ever fast-forwards a
+    branch's remote ref, so a rewrite there can never be delivered; the
+    denial names the pushed tip and tells the coder to `git merge` the base
+    instead (2026-09-13, pushed_tip_guard). Argv-lexical, not a shell: a
+    script run via `sh script.sh`/`python3 -c ...`, or the same verb reached
+    through a brace group or a command substitution ahead of it, is not
+    guaranteed to present a recognizable `git <verb>` argv — see
+    `pushed_tip_guard`'s own module docstring for the disclosed gaps.
   - interactive prompts (`AskUserQuestion`) — nobody is at the keyboard (§22)
   - background polling (`Monitor`, `TaskStop`, `ToolSearch`) in a read-only
     session — a planner does not need to busy-wait on its own subagents
@@ -49,7 +63,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
-from . import exec_names, fs_roots, venv_install_guard
+from . import exec_names, fs_roots, pushed_tip_guard, venv_install_guard
 
 # Read the platform through a constant, never an inline `os.name` test, so the
 # Windows branch below is reachable from a test on any host.
@@ -1113,16 +1127,39 @@ _FORGE_MERGE = re.compile(
     # the project's standing rules forbid in as many words: there is no
     # auto-merge anywhere, and "as soon as checks pass" is auto-merge.
     # Missed by the first sweep, found by review 2026-08-22.
-    r"|mergePullRequest\b|enablePullRequestAutoMerge\b)"
-)
+    # `exec_names.case_flags()`, matching `_RM_RF`/`_GIT_DESTRUCTIVE`: before
+    # #328 this pattern was exact-case, like most of the module's other
+    # lexical gates (`_FORGE_WRITE`, `_GIT_WRITE`, `_LEXICAL_LIVE_SERVER`, and
+    # -- until #328 also folded it below -- `_LEXICAL_MERGE_STACK`).
+    # Reverting `_FORGE_MERGE`'s `case_flags()` alone (checked in isolation,
+    # not compounded with the runner-recursion fix above) reopens exactly two
+    # rows no other gate reaches: `GH api /repos/o/r/pulls/7/merge --method
+    # PUT` and the unbalanced-quote row `sh -c "GH pr merge 7` (no closing
+    # quote — deliberately unbalanced, see `_CASE_MATRIX_EXTRA_ROWS`), both
+    # pinned by
+    # `test_every_capitalised_merge_spelling_is_denied_on_a_folding_host`.
+    # Folding also widens the GraphQL mutation names, which the API itself
+    # treats case-sensitively — that can only ADD a denial for a string that
+    # could never have run as a real mutation, which matches this pattern's
+    # stated polarity: a false denial costs one message, a missed one merges
+    # a PR.
+    r"|mergePullRequest\b|enablePullRequestAutoMerge\b)", exec_names.case_flags())
 
 # The product's OWN spelling of the same act: `nh merge-stack run` shells
 # `gh pr merge` for every READY PR in the stack (cli/commands.py,
 # `merge_stack_run`). It is the OPERATOR's command — a human drives the stack —
-# so in an agent session it is denied in EVERY mode, exactly like
-# `_FORGE_MERGE` above. Proven live 2026-08-08 (P3 gap G6): the guard returned
-# allow=True for `nh merge-stack run --yes` while denying every direct
-# spelling. Unlike `_LIVE_SERVER`, this is NOT anchored to a command position:
+# so in an agent session it is denied in EVERY mode, exactly like `_FORGE_MERGE`
+# above: `_is_approve_verb` and the `_MERGE_VERB_PAIRS` argv comparison fold
+# case the same unconditional way `_forge_subcommand` does (a CLI subcommand
+# spelling is not a filesystem name, so a case-sensitive host is not entitled
+# to run `nh APPROVE`/`nh MERGE-STACK run` any more than a folding one is),
+# and `_LEXICAL_MERGE_STACK` below now carries `re.IGNORECASE` for the same
+# reason (#328 follow-up: this parity sentence used to be false — measured,
+# `nh APPROVE 7`/`nh MERGE-STACK run` reached ALLOW while every direct
+# spelling below was DENY — until these three were folded). Proven live
+# 2026-08-08 (P3 gap G6): the guard returned allow=True for
+# `nh merge-stack run --yes` while denying every direct spelling.
+# Unlike `_LIVE_SERVER`, this is NOT anchored to a command position:
 # `uv run nh merge-stack run` and `sh -c "nh merge-stack run"` are the same
 # merge one wrapper deeper, and for the merge family a prose false positive
 # (an echo or a commit message quoting the full literal command) costs one
@@ -1192,8 +1229,13 @@ _FORGE_MERGE = re.compile(
 #: (options between binary and verb, redirections, wrappers, encodings).
 #: The regex's prose false positives are the cost this file already argues for
 #: on the merge family.
+#: `re.IGNORECASE`, unconditional (not host-gated `case_flags()`): matches the
+#: `.lower()` fold on `_is_approve_verb`/`_MERGE_VERB_PAIRS` below, for the
+#: same reason `_forge_subcommand`'s fold is unconditional — a CLI subcommand
+#: spelling is not a filesystem name, so `nh MERGE-STACK RUN` is not entitled
+#: to run on a case-sensitive host any more than on a folding one (#328).
 _LEXICAL_MERGE_STACK = re.compile(
-    r"(?<![\w.-])(?:nh|no-human)\s+merge-stack\s+run\b")
+    r"(?<![\w.-])(?:nh|no-human)\s+merge-stack\s+run\b", re.IGNORECASE)
 
 _LEXICAL_LIVE_SERVER = re.compile(
     r"(?:^|[|;&]\s*|`|\$\(|^\s*|/|\bsudo\s+|\benv\s+[^|;&]*?\s)"
@@ -1576,8 +1618,29 @@ _ASSIGN_DECLARATORS = frozenset({"export", "local", "readonly", "declare", "type
 
 #: A `gh`/`glab` mention inside a shell-runner argument — precompiled once so
 #: the depth-bounded recursion in `_forge_invocations` stays linear even on
-#: the 50k-char / 1000-wrapper adversarial case.
-_FORGE_MENTION = re.compile(r"\b(?:gh|glab)\s+\S")
+#: the 50k-char / 1000-wrapper adversarial case. Host-gated `case_flags()`,
+#: not unconditional `IGNORECASE`: this gate is what DECIDES whether
+#: `sh -c "GH pr merge 7"` recurses into the quoted payload at all — measured
+#: without `case_flags()` here, `_forge_invocations("sh -c \"GH pr merge
+#: 7\"")` returns `[]`, not the resolved argv, because the search never
+#: matches and the recursive call is never made. This gate and the later
+#: `command_name` fold (also host-gated) are two alternatives tried per
+#: token below (`if`/`elif`), not a two-stage pipeline where one gates the
+#: other: a quoted-payload token (`sh -c "GH pr merge 7"`, the whole nested
+#: command as one argv element) can only be caught here — the `elif`'s
+#: `command_name(tok)` resolves a single bare token, and a multi-word quoted
+#: string never resolves to `gh`/`glab` that way. A trailing-argv token
+#: (`timeout 30 GH pr merge 7`, the forge command spelled out as its own
+#: argv elements) can only be caught by that `elif` — this gate's `\S` after
+#: the forge name requires more non-space text in the SAME token, which a
+#: bare `GH` token does not have. So the two folds cover disjoint token
+#: shapes and must agree on case-folding for the same reason, not because
+#: either one waits on the other (#328's runner-recursion half).
+_FORGE_MENTION = re.compile(r"\b(?:gh|glab)\s+\S", exec_names.case_flags())
+
+#: `git` mention inside a shell-runner argument, `_FORGE_MENTION`'s sibling
+#: for `_git_invocations` — same precompiled-for-linearity, same host gate.
+_GIT_MENTION = re.compile(r"\bgit\s+\S", exec_names.case_flags())
 
 _MASK_KEY = re.compile(r"\x00m\d+\x00")
 
@@ -1608,7 +1671,13 @@ def _is_approve_verb(word: str) -> bool:
     default and let a human notice, rather than shipping unguarded until
     somebody re-audits. This file argues that polarity for the whole merge
     family — a false denial costs one message with a stated alternative, a miss
-    lands a PR."""
+    lands a PR. Folded unconditionally (`#328`, Blocker 3 follow-up): a CLI
+    subcommand spelling is not a filesystem name, so `nh APPROVE <id>` is not
+    entitled to run on a case-sensitive host any more than a folding one --
+    the same rationale `_forge_subcommand`'s fold already uses. Measured
+    before this fold: `nh APPROVE 7`/`nh Approve 7` reached ALLOW while
+    `nh approve 7` was DENY."""
+    word = word.lower()
     return word == "approve" or word.startswith("approve-")
 
 
@@ -1858,7 +1927,11 @@ def _approve_denial(cmd: str, _depth: int = 0) -> str | None:
             words = _nh_subcommand(argv, table)
             if words and _is_approve_verb(words[0]):
                 return _APPROVE_REASON
-            if tuple(words[:2]) in _MERGE_VERB_PAIRS:
+            # Folded (`#328`, Blocker 3 follow-up): `nh MERGE-STACK run` and
+            # `nh merge-stack RUN` reached ALLOW while `nh merge-stack run`
+            # was DENY -- same unconditional-fold rationale as
+            # `_is_approve_verb` above.
+            if tuple(w.lower() for w in words[:2]) in _MERGE_VERB_PAIRS:
                 return _MERGE_STACK_REASON
             if words and (words[0] in _LIVE_VERBS
                           or tuple(words[:2]) in _LIVE_VERB_PAIRS):
@@ -1897,7 +1970,7 @@ def _approve_denial(cmd: str, _depth: int = 0) -> str | None:
                     words = _nh_subcommand(argv[i + 1:], table)
                     if words and _is_approve_verb(words[0]):
                         return _APPROVE_REASON
-                    if tuple(words[:2]) in _MERGE_VERB_PAIRS:
+                    if tuple(w.lower() for w in words[:2]) in _MERGE_VERB_PAIRS:
                         return _MERGE_STACK_REASON
                     if words and (words[0] in _LIVE_VERBS
                                   or tuple(words[:2]) in _LIVE_VERB_PAIRS):
@@ -2059,14 +2132,22 @@ def _forge_subcommand(argv: list[str]) -> tuple[str, str]:
     noun this time, and only the modelled `-R`/`--repo` forms are skipped
     there, never an arbitrary flag. `gh -H pr merge 7` -> ("pr", "merge")
     also — `-H` is not in `_FORGE_GLOBAL_OPT_WITH_ARG` so it is skipped by
-    one token, not two, and the noun is still found."""
+    one token, not two, and the noun is still found.
+
+    The returned noun/verb are folded UNCONDITIONALLY, not behind
+    `exec_names.case_flags()`: a CLI subcommand word is not a filesystem
+    name, so `host_folds_case()` has no bearing on whether `gh pr MERGE 7`
+    is the same invocation as `gh pr merge 7` — it always is, on every host.
+    Flags are matched exact-case still: folding the argv up front would turn
+    `-R` into `-r`, which is not in `_FORGE_GLOBAL_OPT_WITH_ARG`, misreading
+    it as the verb instead of skipping it (#328)."""
     i = 1
     while i < len(argv):
         tok = argv[i]
         if tok.startswith("-"):
             i += 2 if tok in _FORGE_GLOBAL_OPT_WITH_ARG else 1
             continue
-        if tok in _FORGE_NOUNS:
+        if tok.lower() in _FORGE_NOUNS:
             j = i + 1
             while j < len(argv):
                 vtok = argv[j]
@@ -2077,7 +2158,7 @@ def _forge_subcommand(argv: list[str]) -> tuple[str, str]:
                     j += 1
                     continue
                 break
-            return tok, (argv[j] if j < len(argv) else "")
+            return tok.lower(), (argv[j].lower() if j < len(argv) else "")
         i += 1
     return "", ""
 
@@ -2448,15 +2529,19 @@ def _git_subcommand(argv: list[str]) -> tuple[str, list[str]]:
     return "", []
 
 
-#: Runner names `_forge_invocations` recurses into. A union of the shell
-#: runners `_git_invocations` also uses and the trailing-argv runners the
+#: Runner names both `_forge_invocations` and `_git_invocations` recurse
+#: into: the union of `_SHELL_RUNNERS` and the trailing-argv runners the
 #: package-install guard already recognises (`setsid`, `unbuffer`, `nice`,
-#: `ionice`, `chrt`, ... — see `_TRAILING_ARGV_RUNNERS`): `setsid gh -R o/r pr
-#: merge 7` read as ALLOW because `setsid` was consulted by `_approve_denial`
-#: elsewhere but never by this recursion. New name so the widening is scoped
-#: to `_forge_invocations` alone — `_git_invocations`, `_git_push_invocations`
-#: and the install guard keep matching on `_SHELL_RUNNERS`/
-#: `_TRAILING_ARGV_RUNNERS` exactly as before, byte-identical. Found
+#: `ionice`, `chrt`, ... — see `_TRAILING_ARGV_RUNNERS`). Correction 2026-09
+#: (this comment previously, and wrongly, claimed `_git_invocations` kept
+#: matching on `_SHELL_RUNNERS` alone, "byte-identical" to before this name
+#: existed — `_git_invocations` already read `_FORGE_RUNNER_NAMES` before
+#: the pushed-tip rewrite guard landed; that guard did not widen it, this
+#: comment was simply wrong. Read the function: it checks `name in
+#: _FORGE_RUNNER_NAMES`, the full 18-name union, exactly
+#: like `_forge_invocations` does. Verified by
+#: `tests/test_pushed_tip_rewrite_guard.py::test_the_pushed_tip_path_sees_every_runner_the_guard_knows`,
+#: which denies a rewrite wrapped in each of the 18 for real. Found
 #: 2026-08-23.
 _FORGE_RUNNER_NAMES = _SHELL_RUNNERS | _TRAILING_ARGV_RUNNERS
 
@@ -2471,9 +2556,11 @@ def _forge_invocations(cmd: str, _depth: int = 0) -> list[list[str]]:
     Recurses up to two levels into nested shell runners — `bash -c "gh -R o/r
     pr merge 7"`, `sh -c "glab -R o/r mr merge 12"`, `timeout 30 gh …`,
     `xargs gh …`, `setsid gh …`, `chrt -f 1 gh …` (`_FORGE_RUNNER_NAMES`) —
-    the same bound `_git_invocations` uses over its own (narrower)
-    `_SHELL_RUNNERS`, mirrored rather than shared (no helper refactor across
-    the two paths). `$(...)`, `` `...` `` and `{ ...; }` are stripped per
+    the same `_FORGE_RUNNER_NAMES` bound `_git_invocations` recurses into
+    (see the correction on `_FORGE_RUNNER_NAMES` above — the two sets are
+    identical, not narrower/wider). The two recursions are mirrored rather
+    than shared (no helper refactor across the two paths). `$(...)`,
+    `` `...` `` and `{ ...; }` are stripped per
     segment with `_SUBST_HEAD` (a `_GROUPING` sibling — `_GROUPING` itself is
     untouched); `_ASSIGN_SUBST_HEAD` runs first so the same substitution
     heads are also stripped when glued onto an assignment (`x=$(gh …)`); and
@@ -2533,7 +2620,10 @@ def _forge_invocations(cmd: str, _depth: int = 0) -> list[list[str]]:
                 if _FORGE_MENTION.search(tok):
                     found.extend(_forge_invocations(tok, _depth + 1))
                 # `timeout 30 gh …` / `xargs gh …` — the rest of THIS argv.
-                elif PurePosixPath(tok).name in {"gh", "glab"}:
+                # `command_name`, not `PurePosixPath(tok).name`: the same
+                # host-gated fold the top-level branch above already applies
+                # to `argv[0]`, so `timeout 30 GH pr merge 7` is seen too.
+                elif exec_names.command_name(tok, is_windows=_IS_WINDOWS) in {"gh", "glab"}:
                     found.append(argv[j:])
                     break
     return found
@@ -2567,11 +2657,14 @@ def _git_invocations(cmd: str, _depth: int = 0) -> list[tuple[str, list[str]]]:
         elif name in _FORGE_RUNNER_NAMES and _depth < 2:
             for j, tok in enumerate(argv[1:], start=1):
                 # `sh -c "git stash"` — the command is one quoted token.
-                if re.search(r"\bgit\s+\S", tok):
+                if _GIT_MENTION.search(tok):
                     found.extend(_git_invocations(tok, _depth + 1))
                 # `xargs git restore` / `timeout 30 git restore .` — the
                 # command is the rest of THIS argv, already tokenised.
-                elif PurePosixPath(tok).name == "git":
+                # `command_name`, not `PurePosixPath(tok).name`: the same
+                # host-gated fold the top-level branch above already applies
+                # to `argv[0]`, so `timeout 30 GIT restore .` is seen too.
+                elif exec_names.command_name(tok, is_windows=_IS_WINDOWS) == "git":
                     found.append((seg, argv[j:]))
                     break
     return found
@@ -2838,6 +2931,20 @@ def evaluate(
                 "the agent never edits it.", severity=GUARD_DESTRUCTIVE)
         if _RM_RF.search(cmd):
             return GuardDecision(False, f"destructive command blocked (rm -rf): {cmd}", severity=GUARD_DESTRUCTIVE)
+        # Must run BEFORE `_GIT_DESTRUCTIVE` (which already matches `reset
+        # --hard <ref>` lexically, with a generic message) and before
+        # `_git_worktree_denial` (which matches a rebase/merge/pull
+        # wind-back — `--abort`/`--skip`/`--autostash`, via
+        # `_sequencer_clobbers` — and a hard reset/clean/checkout, also with
+        # a generic message; it does NOT match a plain `rebase`, `commit
+        # --amend`, `update-ref`, `checkout -B` or `branch -f` at all — see
+        # `pushed_tip_guard`'s module docstring for the measurement): this
+        # is the only one of the three that names the pushed tip and the
+        # merge alternative, so it has to get first refusal or its message
+        # can never surface.
+        pushed_reason = pushed_tip_guard.denial_reason(_git_invocations(cmd), cwd)
+        if pushed_reason:
+            return GuardDecision(False, pushed_reason, severity=GUARD_DESTRUCTIVE)
         if _GIT_DESTRUCTIVE.search(cmd):
             return GuardDecision(False, f"destructive git command blocked: {cmd}", severity=GUARD_DESTRUCTIVE)
         # Applies to EVERY session, coder included — see the block comment on
@@ -2896,12 +3003,16 @@ def evaluate(
             # backend (codex), which fails the one tool result instead of
             # killing the attempt for it.
             return GuardDecision(False, venv_reason, severity=GUARD_HYGIENE)
-        # Kept as-is: catches `git push` spelled in ways argv analysis does not
-        # reach (inside a heredoc, an alias, a quoted fragment of a larger
-        # script). The argv analysis below is additive, never a replacement.
-        if re.search(r"\bgit\s+push\b", cmd) and _push_targets_protected(
-            cmd, never_push_to
-        ):
+        # Catches `git push` spelled in ways argv analysis does not reach
+        # (inside a heredoc, an alias, a quoted fragment of a larger script,
+        # OR — #328 — a capitalised `GIT` behind a trailing-argv runner like
+        # `timeout`/`xargs` that `_git_push_invocations`'s per-token
+        # `_looks_like_git_push` recursion does not resolve). `case_flags()`
+        # added so this whole-string fallback folds the same way its sibling
+        # gates (`_FORGE_MERGE`, `_GIT_MENTION`) now do. The argv analysis
+        # below is additive, never a replacement.
+        if (re.search(r"\bgit\s+push\b", cmd, exec_names.case_flags())
+                and _push_targets_protected(cmd, never_push_to)):
             return GuardDecision(
                 False, f"push to protected branch blocked: {cmd}. Push to your own "
                 "branch and open a PR instead — pushing to the base branch is "
