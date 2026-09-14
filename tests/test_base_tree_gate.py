@@ -372,134 +372,6 @@ async def test_pre_existing_red_test_excused_when_runner_rewrites_the_command(
             "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
         )
 
-    orch = _orch(store, tmp_path, FakeBackend(mutate))
-    t = Task.new("add mul()", repo_path=str(bare_repo))
-    await store.create_task(t)
-
-    outcome = await orch.run_task(t)
-
-    assert outcome.status is TaskStatus.AWAITING_APPROVAL, outcome.detail
-    assert outcome.pr_url is not None
-    attempts = await store.list_attempts(t.id)
-    assert attempts[-1]["status"] != "failed", (
-        "a pre-existing failure must still be excused when the runner had "
-        "to rewrite the bounded base-check command (node ids preserved): "
-        + str(attempts[-1])
-    )
-
-
-async def test_unparseable_red_run_fails_closed(bare_repo, tmp_path, store):
-    """A red run whose output carries counts but NO test node ids to bound a
-    base recheck on (empty failing_tests) keeps the current behaviour — the
-    attempt FAILS. Never silently pass a red run that cannot be attributed."""
-    from no_human.profile import ProjectProfile
-    prof = ProjectProfile(
-        repo_path=str(bare_repo), ecosystem="python",
-        # unittest-style summary: real counts, exit 1, but no `path::test` ids
-        test_cmd="printf 'Passed: 1\\nFailed: 1\\nErrors: 0\\n'; exit 1",
-        derived_from=["test"], proven={"test_cmd": True}, confirmed=True,
-    )
-    await store.upsert_profile(prof)
-
-    def mutate(cwd):
-        (cwd / "calc.py").write_text(
-            "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
-        )
-
-    orch = _orch(store, tmp_path, FakeBackend(mutate))
-    t = Task.new("add mul()", repo_path=str(bare_repo))
-    await store.create_task(t)
-
-    outcome = await orch.run_task(t)
-
-    assert outcome.status is not TaskStatus.AWAITING_APPROVAL
-    assert outcome.pr_url is None
-    attempts = await store.list_attempts(t.id)
-    assert attempts[-1]["status"] == "failed"
-
-
-async def test_base_recheck_inconclusive_fails_closed(bare_repo, tmp_path, store):
-    """When the bounded base rerun cannot establish a per-id verdict it must
-    fail CLOSED (never PASS on an inconclusive base check). A failing test the
-    change ADDED does not exist on base, so the bounded rerun errors (nothing
-    to collect) → inconclusive → the attempt FAILS (a newly-added failing test
-    is the change's fault anyway)."""
-    (bare_repo / "pytest.ini").write_text("[pytest]\n")
-    _git(bare_repo, "add", "-A")
-    _git(bare_repo, "commit", "-m", "pytest marker")
-
-    def mutate(cwd):
-        (cwd / "calc.py").write_text(
-            "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
-        )
-        # a NEW test file, absent on base, whose test fails
-        (cwd / "test_mul.py").write_text(
-            "from calc import mul\n\ndef test_mul():\n    assert mul(2, 3) == 7\n"
-        )
-
-    orch = _orch(store, tmp_path, FakeBackend(mutate))
-    t = Task.new("add mul()", repo_path=str(bare_repo))
-    await store.create_task(t)
-
-    outcome = await orch.run_task(t)
-
-    assert outcome.status is not TaskStatus.AWAITING_APPROVAL
-    assert outcome.pr_url is None
-    attempts = await store.list_attempts(t.id)
-    assert attempts[-1]["status"] == "failed"
-async def test_pre_existing_red_test_excused_when_runner_rewrites_the_command(
-    bare_repo, tmp_path, store, monkeypatch
-):
-    """Review send-back F1 (disqualifying): the bounded base-tree rerun in
-    `_newly_failing_vs_base` used to discard ANY verdict whose reported
-    `result.command` differed from the bounded command it asked for — a
-    "command-identity guard". But the test runner legitimately REWRITES an
-    invocation that fails to launch, and one of those rewrite classes (bare
-    `pytest ...` -> `f"{sys.executable} -m pytest ..."`, see
-    `runner._fix_invocation`) preserves the requested node ids VERBATIM. That
-    guard threw away an honest, correctly-bounded verdict in exactly this
-    case — reinstating the "red suite blames the change" bug (#238) this task
-    exists to fix. The guard has been deleted; the by-name accounting check
-    (every requested id present in the base run's reported passes/failures)
-    is what decides trustworthiness now, not command-string equality.
-
-    This reproduces the rewrite end-to-end by stripping the bare `pytest`
-    binary's directory from PATH, so the fixture repo's detected command
-    (`pytest -q`, no uv.lock here) fails to launch on the FIRST attempt and
-    the runner retries with `sys.executable -m pytest` for both the
-    attempt's own test run and the bounded base-tree recheck.
-    """
-    (bare_repo / "pytest.ini").write_text("[pytest]\n")
-    (bare_repo / "test_preexisting.py").write_text(
-        "def test_preexisting():\n    assert False, 'red before the change'\n"
-    )
-    _git(bare_repo, "add", "-A")
-    _git(bare_repo, "commit", "-m", "pre-existing red test on base")
-
-    # More than one PATH entry may carry a `pytest` binary (e.g. this
-    # worktree's own .venv AND an inherited parent-repo .venv) — strip every
-    # directory that resolves one, not just the first `which` hit. None at all
-    # is also a valid starting point: `.venv/bin/python -m pytest` leaves the
-    # bare binary unresolvable, and the scenario this test builds is then
-    # already in place, so there is nothing to require here (#344). What the
-    # rewrite actually needs is asserted after the strip, not before it.
-    stripped = [
-        p
-        for p in os.environ.get("PATH", "").split(os.pathsep)
-        if p and not (Path(p) / "pytest").exists()
-    ]
-    monkeypatch.setenv("PATH", os.pathsep.join(stripped))
-    assert shutil.which("pytest") is None, (
-        "PATH stripping did not remove the bare `pytest` binary; the "
-        "runner's class-3 rewrite fallback would not be exercised"
-    )
-
-    def mutate(cwd):
-        # a benign change that touches neither the failing test nor any test file
-        (cwd / "calc.py").write_text(
-            "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
-        )
-
     # Every command that actually reached a shell. The outcome below is
     # produced by several paths, so on its own it says nothing about the
     # rewrite this test is named for: the class-3 branch could return `None`
@@ -593,3 +465,62 @@ async def test_pre_existing_red_test_excused_when_runner_rewrites_the_command(
         "to rewrite the bounded base-check command (node ids preserved): "
         + str(attempts[-1])
     )
+async def test_unparseable_red_run_fails_closed(bare_repo, tmp_path, store):
+    """A red run whose output carries counts but NO test node ids to bound a
+    base recheck on (empty failing_tests) keeps the current behaviour — the
+    attempt FAILS. Never silently pass a red run that cannot be attributed."""
+    from no_human.profile import ProjectProfile
+    prof = ProjectProfile(
+        repo_path=str(bare_repo), ecosystem="python",
+        # unittest-style summary: real counts, exit 1, but no `path::test` ids
+        test_cmd="printf 'Passed: 1\\nFailed: 1\\nErrors: 0\\n'; exit 1",
+        derived_from=["test"], proven={"test_cmd": True}, confirmed=True,
+    )
+    await store.upsert_profile(prof)
+
+    def mutate(cwd):
+        (cwd / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
+        )
+
+    orch = _orch(store, tmp_path, FakeBackend(mutate))
+    t = Task.new("add mul()", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL
+    assert outcome.pr_url is None
+    attempts = await store.list_attempts(t.id)
+    assert attempts[-1]["status"] == "failed"
+
+
+async def test_base_recheck_inconclusive_fails_closed(bare_repo, tmp_path, store):
+    """When the bounded base rerun cannot establish a per-id verdict it must
+    fail CLOSED (never PASS on an inconclusive base check). A failing test the
+    change ADDED does not exist on base, so the bounded rerun errors (nothing
+    to collect) → inconclusive → the attempt FAILS (a newly-added failing test
+    is the change's fault anyway)."""
+    (bare_repo / "pytest.ini").write_text("[pytest]\n")
+    _git(bare_repo, "add", "-A")
+    _git(bare_repo, "commit", "-m", "pytest marker")
+
+    def mutate(cwd):
+        (cwd / "calc.py").write_text(
+            "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
+        )
+        # a NEW test file, absent on base, whose test fails
+        (cwd / "test_mul.py").write_text(
+            "from calc import mul\n\ndef test_mul():\n    assert mul(2, 3) == 7\n"
+        )
+
+    orch = _orch(store, tmp_path, FakeBackend(mutate))
+    t = Task.new("add mul()", repo_path=str(bare_repo))
+    await store.create_task(t)
+
+    outcome = await orch.run_task(t)
+
+    assert outcome.status is not TaskStatus.AWAITING_APPROVAL
+    assert outcome.pr_url is None
+    attempts = await store.list_attempts(t.id)
+    assert attempts[-1]["status"] == "failed"
