@@ -162,7 +162,7 @@ named here.
   and line and quote the lines they are about. Same destination as the push.
 - **PR receipt and status polling** — `gh` / `glab` calls for the PR's head SHA
   and its mergeability (`vcs/pr_watcher.py:default_pr_state`, `vcs/receipts.py`), plus
-  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1222`, `:GitRepo.fetch:1558`),
+  `git fetch origin` (`vcs/git.py:GitRepo._have_remote_commit:1220`, `:GitRepo.fetch:1556`),
   while a task waits on CI or review.
   These read; they send only the identifiers of a PR you just created.
 - **`nh merge-stack run` calls `gh pr merge`** against your git host
@@ -354,7 +354,16 @@ named here.
   diff or token. On by default (`telemetry.enabled: true`), off with
   `telemetry.enabled: false` in `~/.no_human/config.yaml`. The browser board
   sends its own PostHog analytics and session replay on the same id (same doc
-  section) — that channel is independent of this one.
+  section) — that channel is independent of this one. Its replay *network*
+  capture sub-channel is default-deny (`web/src/replayScrub.js`):
+  request/response bodies are redacted unless the endpoint is on a short,
+  verified-safe allowlist. That default-deny guarantee covers network bodies
+  only — session replay also records the page's DOM/rendering (rrweb), which
+  is a separate capture mechanism this allowlist does not govern, so the
+  "never a task title, repo name, path, prompt, diff or token" guarantee
+  above does **not** extend to session replay as a whole (see
+  `docs/configuration.md`'s "can capture pixels of anything not on the masked
+  list" note).
 
 ### Only if you configure it
 
