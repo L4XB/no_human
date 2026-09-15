@@ -133,7 +133,9 @@ pre-execution. It cannot see:
     session's OWN worktree venv stays allowed exactly as its
     correctly-named spelling does.
 
-    **STILL OPEN**, all four measured against the same fixture:
+    **STILL OPEN.** The first three are measured against the same
+    fixture and pinned by ``test_341_open_*``; the fourth follows from
+    what the identification reads and has no fixture to measure:
 
       * the BARE-token spelling — ``notpip install evilpkg`` with the
         copy's directory on ``PATH``. The bare-token branch of
